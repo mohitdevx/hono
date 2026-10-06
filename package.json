@@ -248,6 +248,11 @@
       "import": "./dist/middleware/method-override/index.js",
       "require": "./dist/cjs/middleware/method-override/index.js"
     },
+    "./healthcheck": {
+      "types": "./dist/types/middleware/healthcheck/index.d.ts",
+      "import": "./dist/middleware/healthcheck/index.js",
+      "require": "./dist/cjs/middleware/healthcheck/index.js"
+    },
     "./powered-by": {
       "types": "./dist/types/middleware/powered-by/index.d.ts",
       "import": "./dist/middleware/powered-by/index.js",
