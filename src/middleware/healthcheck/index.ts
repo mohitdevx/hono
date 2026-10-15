@@ -119,14 +119,19 @@ export const healthcheck = (options: HealthcheckOptions = {}): MiddlewareHandler
           () => finishCheck(record, record.controller.signal.aborted ? 'timeout' : 'error')
         )
 
-      if (record.check.timeout !== undefined) {
+      if (record.check.timeout === undefined) {
+        return checkPromise
+      }
+
+      const timeoutPromise = new Promise<void>((resolve) => {
         record.timeoutId = setTimeout(() => {
           record.controller.abort()
           finishCheck(record, 'timeout')
+          resolve()
         }, record.check.timeout)
-      }
+      })
 
-      return checkPromise
+      return Promise.race([checkPromise, timeoutPromise])
     })
 
     let globalTimeoutId: ReturnType<typeof setTimeout> | undefined

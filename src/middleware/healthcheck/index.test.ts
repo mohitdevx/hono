@@ -132,6 +132,39 @@ describe('healthcheck middleware', () => {
     expect(aborted).toBe(true)
   })
 
+  it('returns at the per-check timeout if a check ignores its abort signal', async () => {
+    const app = new Hono()
+    let finishCheck: (() => void) | undefined
+    app.get(
+      '/readyz',
+      healthcheck({
+        checks: [
+          {
+            name: 'database',
+            timeout: 5,
+            check: () => new Promise<void>((resolve) => (finishCheck = resolve)),
+          },
+        ],
+      })
+    )
+
+    const response = await Promise.race([
+      app.request('/readyz'),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
+    ])
+    finishCheck?.()
+
+    expect(response).not.toBeNull()
+    if (!response) {
+      return
+    }
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({
+      status: 'unhealthy',
+      checks: { database: 'timeout' },
+    })
+  })
+
   it('marks unfinished checks as timed out when the global timeout expires', async () => {
     const app = new Hono()
     app.get(
