@@ -1,314 +1,189 @@
+import { healthcheck } from '.'
 import { Hono } from '../../hono'
-import { healthcheck } from './index'
 
-describe('Healthcheck Middleware', () => {
-  it('Should return 200 OK with default liveness report', async () => {
+describe('healthcheck middleware', () => {
+  it('returns a minimal liveness response without exposing metadata', async () => {
     const app = new Hono()
-    app.get('/health', healthcheck())
+    app.get('/livez', healthcheck())
 
-    const res = await app.request('http://localhost/health')
+    const res = await app.request('/livez')
+
     expect(res.status).toBe(200)
-    expect(res.headers.get('Cache-Control')).toBe('no-cache, no-store, must-revalidate')
-    expect(res.headers.get('Content-Type')).toMatch(/application\/json/)
-
-    const data = await res.json()
-    expect(data.status).toBe('ok')
-    expect(typeof data.timestamp).toBe('string')
-    expect(new Date(data.timestamp).getTime()).not.toBeNaN()
-    expect(data.checks).toBeUndefined()
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    expect(await res.json()).toEqual({ status: 'ok' })
   })
 
-  it('Should support record-style checks that all pass', async () => {
+  it('reports successful checks as ready', async () => {
     const app = new Hono()
     app.get(
-      '/health',
+      '/readyz',
       healthcheck({
-        checks: {
-          syncCheck: () => true,
-          asyncCheck: async () => {
-            await new Promise((resolve) => setTimeout(resolve, 5))
-            return { memory: '50MB' }
-          },
-          voidCheck: () => {
-            // does not return anything
-          },
-        },
+        checks: [
+          { name: 'database', check: async () => {} },
+          { name: 'cache', check: async () => {} },
+        ],
       })
     )
 
-    const res = await app.request('http://localhost/health')
-    expect(res.status).toBe(200)
+    const res = await app.request('/readyz')
 
-    const data = await res.json()
-    expect(data.status).toBe('ok')
-    expect(data.checks.syncCheck.status).toBe('ok')
-    expect(typeof data.checks.syncCheck.duration).toBe('number')
-    expect(data.checks.asyncCheck.status).toBe('ok')
-    expect(data.checks.asyncCheck.details).toEqual({ memory: '50MB' })
-    expect(data.checks.voidCheck.status).toBe('ok')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      status: 'ok',
+      checks: { database: 'ok', cache: 'ok' },
+    })
   })
 
-  it('Should return 503 Unhealthy when a critical check fails or throws', async () => {
+  it('returns 503 for a failed critical check without exposing its error', async () => {
     const app = new Hono()
     app.get(
-      '/health',
+      '/readyz',
       healthcheck({
         checks: [
           {
-            name: 'db',
-            critical: true,
+            name: 'database',
             check: async () => {
-              throw new Error('Database connection failed')
+              throw new Error('connection string must stay private')
             },
-          },
-          {
-            name: 'cache',
-            check: () => true,
           },
         ],
       })
     )
 
-    const res = await app.request('http://localhost/health')
-    expect(res.status).toBe(503)
+    const res = await app.request('/readyz')
+    const body = await res.text()
 
-    const data = await res.json()
-    expect(data.status).toBe('unhealthy')
-    expect(data.checks.db.status).toBe('failed')
-    expect(data.checks.db.error).toBe('Database connection failed')
-    expect(data.checks.cache.status).toBe('ok')
+    expect(res.status).toBe(503)
+    expect(res.headers.get('Cache-Control')).toBe('no-store')
+    expect(JSON.parse(body)).toEqual({
+      status: 'unhealthy',
+      checks: { database: 'error' },
+    })
+    expect(body).not.toContain('connection string must stay private')
   })
 
-  it('Should return 503 Unhealthy when a check returns false', async () => {
+  it('returns 200 with degraded status for a failed non-critical check', async () => {
     const app = new Hono()
     app.get(
-      '/health',
-      healthcheck({
-        checks: {
-          ping: () => false,
-        },
-      })
-    )
-
-    const res = await app.request('http://localhost/health')
-    expect(res.status).toBe(503)
-
-    const data = await res.json()
-    expect(data.status).toBe('unhealthy')
-    expect(data.checks.ping.status).toBe('failed')
-    expect(data.checks.ping.error).toBe('Check returned false')
-  })
-
-  it('Should return 200 Degraded when only non-critical checks fail', async () => {
-    const app = new Hono()
-    app.get(
-      '/health',
+      '/readyz',
       healthcheck({
         checks: [
           {
-            name: 'criticalDb',
-            critical: true,
-            check: () => true,
-          },
-          {
-            name: 'nonCriticalMetrics',
+            name: 'redis_cache',
             critical: false,
             check: async () => {
-              throw new Error('Metrics backend unavailable')
+              throw new Error('cache unavailable')
             },
           },
         ],
       })
     )
 
-    const res = await app.request('http://localhost/health')
-    expect(res.status).toBe(200)
+    const res = await app.request('/readyz')
 
-    const data = await res.json()
-    expect(data.status).toBe('degraded')
-    expect(data.checks.criticalDb.status).toBe('ok')
-    expect(data.checks.nonCriticalMetrics.status).toBe('failed')
-    expect(data.checks.nonCriticalMetrics.error).toBe('Metrics backend unavailable')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      status: 'degraded',
+      checks: { redis_cache: 'error' },
+    })
   })
 
-  it('Should enforce timeout on slow checks', async () => {
+  it('includes uptime and custom info only when requested', async () => {
     const app = new Hono()
+    app.get('/livez', healthcheck({ uptime: true, info: { version: '1.0.0' } }))
+
+    const res = await app.request('/livez')
+    const body = (await res.json()) as { status: string; uptime: number; info: object }
+
+    expect(body.status).toBe('ok')
+    expect(body.uptime).toBeGreaterThanOrEqual(0)
+    expect(body.info).toEqual({ version: '1.0.0' })
+  })
+
+  it('marks a timed out check and aborts its signal', async () => {
+    const app = new Hono()
+    let aborted = false
     app.get(
-      '/health',
+      '/readyz',
       healthcheck({
-        timeout: 20,
         checks: [
           {
-            name: 'fast',
-            check: async () => {
-              await new Promise((resolve) => setTimeout(resolve, 5))
-              return true
-            },
-          },
-          {
-            name: 'slow',
-            timeout: 10,
-            check: async () => {
-              await new Promise((resolve) => setTimeout(resolve, 50))
-              return true
-            },
+            name: 'database',
+            timeout: 5,
+            check: (_c, signal) =>
+              new Promise<void>((_resolve, reject) => {
+                signal.addEventListener('abort', () => {
+                  aborted = true
+                  reject(new Error('aborted'))
+                })
+              }),
           },
         ],
       })
     )
 
-    const res = await app.request('http://localhost/health')
+    const res = await app.request('/readyz')
+
     expect(res.status).toBe(503)
-
-    const data = await res.json()
-    expect(data.status).toBe('unhealthy')
-    expect(data.checks.fast.status).toBe('ok')
-    expect(data.checks.slow.status).toBe('failed')
-    expect(data.checks.slow.error).toContain('timed out')
-  })
-
-  it('Should include uptime and info metadata', async () => {
-    type EnvType = { Bindings: { APP_ENV: string } }
-    const app = new Hono<EnvType>()
-    app.get(
-      '/health',
-      healthcheck<EnvType>({
-        uptime: true,
-        info: (c) => ({
-          env: c.env?.APP_ENV ?? 'test',
-          version: '1.0.0',
-        }),
-      })
-    )
-
-    const res = await app.request('http://localhost/health')
-    expect(res.status).toBe(200)
-
-    const data = await res.json()
-    expect(data.status).toBe('ok')
-    expect(typeof data.uptime).toBe('number')
-    expect(data.uptime).toBeGreaterThanOrEqual(0)
-    expect(data.info).toEqual({
-      env: 'test',
-      version: '1.0.0',
+    expect(await res.json()).toEqual({
+      status: 'unhealthy',
+      checks: { database: 'timeout' },
     })
+    expect(aborted).toBe(true)
   })
 
-  it('Should support custom status codes, headers, and cache-control options', async () => {
+  it('returns at the per-check timeout if a check ignores its abort signal', async () => {
     const app = new Hono()
+    let finishCheck: (() => void) | undefined
     app.get(
-      '/health-custom',
+      '/readyz',
       healthcheck({
-        statusCode: {
-          ok: 200,
-          degraded: 207,
-          unhealthy: 500,
-        },
-        cacheControl: 'public, max-age=60',
-        headers: {
-          'X-Custom-Header': 'HealthService',
-        },
         checks: [
           {
-            name: 'warnCheck',
-            critical: false,
-            check: () => false,
+            name: 'database',
+            timeout: 5,
+            check: () => new Promise<void>((resolve) => (finishCheck = resolve)),
           },
         ],
       })
     )
 
-    const res = await app.request('http://localhost/health-custom')
-    expect(res.status).toBe(207)
-    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60')
-    expect(res.headers.get('X-Custom-Header')).toBe('HealthService')
+    const response = await Promise.race([
+      app.request('/readyz'),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
+    ])
+    finishCheck?.()
 
-    const data = await res.json()
-    expect(data.status).toBe('degraded')
-  })
-
-  it('Should disable Cache-Control when cacheControl is set to false', async () => {
-    const app = new Hono()
-    app.get(
-      '/health-no-cache-header',
-      healthcheck({
-        cacheControl: false,
-      })
-    )
-
-    const res = await app.request('http://localhost/health-no-cache-header')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('Cache-Control')).toBeNull()
-  })
-
-  it('Should allow checks to access Context c.req properties', async () => {
-    const app = new Hono()
-    app.get(
-      '/health',
-      healthcheck({
-        checks: {
-          headerCheck: (c) => {
-            const auth = c.req.header('x-health-token')
-            if (auth !== 'secret') {
-              throw new Error('Invalid token')
-            }
-            return true
-          },
-        },
-      })
-    )
-
-    // Unauthorized request
-    const unauthRes = await app.request('http://localhost/health')
-    expect(unauthRes.status).toBe(503)
-
-    // Authorized request
-    const authRes = await app.request('http://localhost/health', {
-      headers: {
-        'x-health-token': 'secret',
-      },
-    })
-    expect(authRes.status).toBe(200)
-    const data = await authRes.json()
-    expect(data.status).toBe('ok')
-    expect(data.checks.headerCheck.status).toBe('ok')
-  })
-
-  it('Should support static info object', async () => {
-    const app = new Hono()
-    app.get(
-      '/health-static-info',
-      healthcheck({
-        info: {
-          service: 'auth-service',
-          version: '2.1.0',
-        },
-      })
-    )
-    const res = await app.request('http://localhost/health-static-info')
-    expect(res.status).toBe(200)
-    const data = await res.json()
-    expect(data.info).toEqual({
-      service: 'auth-service',
-      version: '2.1.0',
+    expect(response).not.toBeNull()
+    if (!response) {
+      return
+    }
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({
+      status: 'unhealthy',
+      checks: { database: 'timeout' },
     })
   })
 
-  it('Should handle non-Error throws in checks', async () => {
+  it('marks unfinished checks as timed out when the global timeout expires', async () => {
     const app = new Hono()
     app.get(
-      '/health-throw-string',
+      '/readyz',
       healthcheck({
-        checks: {
-          strError: () => {
-            throw 'string failure'
-          },
-        },
+        timeout: 5,
+        checks: [
+          { name: 'database', check: async () => {} },
+          { name: 'cache', check: () => new Promise<void>(() => {}) },
+        ],
       })
     )
-    const res = await app.request('http://localhost/health-throw-string')
+
+    const res = await app.request('/readyz')
+
     expect(res.status).toBe(503)
-    const data = await res.json()
-    expect(data.checks.strError.error).toBe('string failure')
+    expect(await res.json()).toEqual({
+      status: 'unhealthy',
+      checks: { database: 'ok', cache: 'timeout' },
+    })
   })
 })

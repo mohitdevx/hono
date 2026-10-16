@@ -223,6 +223,11 @@
       "import": "./dist/middleware/jwk/index.js",
       "require": "./dist/cjs/middleware/jwk/index.js"
     },
+    "./healthcheck": {
+      "types": "./dist/types/middleware/healthcheck/index.d.ts",
+      "import": "./dist/middleware/healthcheck/index.js",
+      "require": "./dist/cjs/middleware/healthcheck/index.js"
+    },
     "./timeout": {
       "types": "./dist/types/middleware/timeout/index.d.ts",
       "import": "./dist/middleware/timeout/index.js",
@@ -538,6 +543,9 @@
       ],
       "jwk": [
         "./dist/types/middleware/jwk"
+      ],
+      "healthcheck": [
+        "./dist/types/middleware/healthcheck"
       ],
       "timeout": [
         "./dist/types/middleware/timeout"
